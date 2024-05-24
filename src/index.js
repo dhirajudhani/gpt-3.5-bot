@@ -1,67 +1,75 @@
-import { Client } from "discord.js";
-import { OpenAI } from "openai";
-import dotenv from 'dotenv'
-
-dotenv.config()
-
+require('dotenv/config');
+const { Client, IntentsBitField } = require('discord.js');
+const { Configuration, OpenAIApi } = require('openai');
 const client = new Client({
-  intents: ["Guilds", "GuildMembers", "GuildMessages", "MessageContent"],
+  intents: [
+    IntentsBitField.Flags.Guilds,
+    IntentsBitField.Flags.GuildMessages,
+    IntentsBitField.Flags.MessageContent,
+  ],
 });
 
 client.on('ready', () => {
-    console.log('The bot is ready to chat!!')
-})
+  console.log('The bot is online!');
+});
 
-const IGNORE_PREFIX = "!"
-const CHANNELS = ["1241796350878945365"]
+const configuration = new Configuration({
+  apiKey: process.env.API_KEY,
+});
 
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_KEY
-})
-
-async function fetchOpenAIResponse(messageContent) {
-    const systemMessage = {
-        role: 'system',
-        content: 'Chat gpt is a friendly chat bot.'
-    };
-    const userMessage = {
-        role: 'user',
-        content: messageContent
-    };
-
-    for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-            const response = await openai.chat.completions.create({
-                model: 'gpt-3.5-turbo',
-                messages: [systemMessage, userMessage]
-            });
-            return response.choices[0].message.content;
-        } catch (error) {
-            if (error.status === 429) {
-                const retryAfter = error.headers['retry-after'] || 2 ** attempt;
-                console.warn(`Rate limit exceeded. Retrying in ${retryAfter} seconds...`);
-                await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-            } else {
-                console.error('OpenAI error:', error);
-                throw error;
-            }
-        }
-    }
-    throw new Error('Failed to fetch response from OpenAI after several attempts.');
-}
+const openai = new OpenAIApi(configuration);
 
 client.on('messageCreate', async (message) => {
-    if(message.author.bot) return; // stops the multiple replying condition
-    if(message.content.startsWith(IGNORE_PREFIX)) return;
-    if(!CHANNELS.includes(message.channelId) && !message.mentions.users.has(client.user.id)) return;
+  if (message.author.bot) return;
+  if (message.channel.id !== process.env.CHANNEL_ID) return;
+  if (message.content.startsWith('!')) return;
 
-    try {
-        const responseContent = await fetchOpenAIResponse(message.content);
-        await message.reply(responseContent);
-    } catch (error) {
-        console.error('Failed to fetch response from OpenAI:', error);
-        await message.reply('Sorry, I am currently experiencing high traffic. Please try again later.');
-    }
+  let conversationLog = [
+    { role: 'system', content: 'You are a friendly chatbot.' },
+  ];
+
+  try {
+    await message.channel.sendTyping();
+    let prevMessages = await message.channel.messages.fetch({ limit: 15 });
+    prevMessages.reverse();
+    
+    prevMessages.forEach((msg) => {
+      if (msg.content.startsWith('!')) return;
+      if (msg.author.id !== client.user.id && message.author.bot) return;
+      if (msg.author.id == client.user.id) {
+        conversationLog.push({
+          role: 'assistant',
+          content: msg.content,
+          name: msg.author.username
+            .replace(/\s+/g, '_')
+            .replace(/[^\w\s]/gi, ''),
+        });
+      }
+
+      if (msg.author.id == message.author.id) {
+        conversationLog.push({
+          role: 'user',
+          content: msg.content,
+          name: message.author.username
+            .replace(/\s+/g, '_')
+            .replace(/[^\w\s]/gi, ''),
+        });
+      }
+    });
+
+    const result = await openai
+      .createChatCompletion({
+        model: 'gpt-3.5-turbo',
+        messages: conversationLog,
+        // max_tokens: 256, // limit token usage
+      })
+      .catch((error) => {
+        console.log(`OPENAI ERR: ${error}`);
+      });
+    message.reply(result.data.choices[0].message);
+  } catch (error) {
+    console.log(`ERR: ${error}`);
+  }
 });
 
 client.login(process.env.TOKEN);
